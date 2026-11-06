@@ -36,13 +36,13 @@
 
 ## 开始出图
 
-生图需要一个兼容 GPT Image 的接口（OpenAI 官方或任意中转站）。打开 **接口设置**，填 Base URL 和 API Key，默认模型 `gpt-image-2`。
+生图需要一个兼容 GPT Image 的接口（OpenAI 官方或任意中转站）。打开 **接口设置**，填 Base URL 和 API Key，默认模型 `gpt-image-2.6`（新安装或没有保存模型配置时生效；已有自定义模型保持不变）。
 
 点 **生成方案** 会用 DSH 当前的默认模型做规划，不需要另外配文本模型。确认方案后，单页生成或批量生成，最后 **导出整套 ZIP**。批量生成使用最多 **4 路并发**，不会逐张排队；一页失败不会阻塞其他页，已完成的结果会逐页保存。
 
 ### 生成原生 GIF 动画
 
-使用 [chatgpt2api-dsh](https://github.com/yang0/chatgpt2api-dsh) 号池新版 GIF 接口时，在 **整套 → 输出格式** 中选择 **动画 GIF**，设置帧数（2–16）与每帧时长（20–2000 毫秒，10 毫秒递增）；在接口设置选择 `gpt-image-2.6`、`gpt-image-2.6-flare` 或 `gpt-image-2.6-sunburst`。GIF 参数通过 `/v1/images/generations` 的 `output_format` / `frame_count` / `frame_duration_ms` 传递。
+使用 [chatgpt2api-dsh](https://github.com/yang0/chatgpt2api-dsh) 号池新版 GIF 接口时，在**创作页面顶部「生成格式」**中选择 **动画 GIF**，设置帧数（2–16）与每帧时长（20–2000 毫秒，10 毫秒递增）；默认模型已改为 `gpt-image-2.6`，也可在接口设置选择 `gpt-image-2.6-flare` 或 `gpt-image-2.6-sunburst`。GIF 参数通过 `/v1/images/generations` 的 `output_format` / `frame_count` / `frame_duration_ms` 传递。
 
 GIF 只走文生图：画风等素材会通过文字描述影响生成，但上传照片和整套参考图暂不支持。生成后在工作台播放动画，可下载原生 GIF；整套 ZIP 中也会保留 GIF 动画，不会经过 PNG 画布静态化。如果号池未实际返回 GIF，则会报错而不会假装转换成功。是否可用取决于号池账号的上游能力；更新号池插件后需要重启对应后端进程。
 
