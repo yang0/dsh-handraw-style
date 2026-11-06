@@ -24,13 +24,18 @@ async function withPlan(plan, run) {
 }
 const planRequest=() => createPlan(base,{key:'mock-secret-key',baseUrl:'http://127.0.0.1:38650/v1'},list,new AbortController().signal);
 
-test('AI must select a real catalog style', async () => {
-  await withPlan({...validPlan,style:null},async () => {
-    await assert.rejects(planRequest(), /画风是必选项/);
-  });
-  await withPlan({...validPlan,style:'FA-999'},async () => {
-    await assert.rejects(planRequest(), /画风是必选项/);
-  });
+test('missing or invalid AI style is recovered from the real catalog', async () => {
+  for(const badStyle of [null,'FA-999']){
+    const plan=await withPlan({...validPlan,style:badStyle},planRequest);
+    assert.ok(catalog.style.some(x=>x.id===plan.style));
+    assert.equal(plan.styleSource,'fallback');
+  }
+});
+
+test('AI can return the exact catalog style name rather than an ID', async () => {
+  const plan=await withPlan({...validPlan,style:'绘本风格'},planRequest);
+  assert.equal(plan.style,'FA-001');
+  assert.equal(plan.styleSource,'ai');
 });
 
 test('AI plan returns validated style, assets and rendering parameters', async () => {
@@ -48,7 +53,7 @@ test('invalid parameter choices are safely dropped', async () => {
   const plan=await withPlan({...validPlan,pages:[{...validPlan.pages[0],layout:'SC-999',promptMode:'unknown',
     direction:{tone:'T-999',whitespace:'unknown',ratio:'invalid'}}]},planRequest);
   assert.equal(plan.pages[0].layout,undefined);
-  assert.equal(plan.pages[0].promptMode,undefined);
+  assert.equal(plan.pages[0].promptMode,'graphic-text');
   assert.equal(plan.pages[0].direction.tone,undefined);
   assert.equal(plan.pages[0].direction.whitespace,'auto');
   assert.equal(plan.pages[0].direction.ratio,undefined);
