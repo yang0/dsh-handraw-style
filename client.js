@@ -78,8 +78,9 @@ window.__ModuleLoader__.load({
     };
     const galleryPageSize = 72;
     const catalogs = { ...categories, color:'主题色', layout:'版式' };
+    const isGif = page => page?.image?.startsWith('data:image/gif;');
     const blankPage = (role, title='', body='') => ({ id:crypto.randomUUID(), role,title,body,brief:'',refs:{},image:'',locked:false });
-    const fresh = () => ({ id:crypto.randomUUID(),mode:'single',platform:'portrait',theme:'',outline:'',visual:{},pages:[blankPage('single')],anchor:'' });
+    const fresh = () => ({ id:crypto.randomUUID(),mode:'single',platform:'portrait',outputFormat:'png',frameCount:9,frameDurationMs:200,theme:'',outline:'',visual:{},pages:[blankPage('single')],anchor:'' });
     // 存档可能来自旧版本，读回时补齐缺省字段，避免恢复出无法渲染的项目。
     function normalizeProject(project) {
       if(!project||typeof project!=='object'||!Array.isArray(project.pages)||!project.pages.length)return null;
@@ -87,6 +88,9 @@ window.__ModuleLoader__.load({
         id:project.id||crypto.randomUUID(),
         mode:Object.hasOwn(modes,project.mode)?project.mode:'single',
         platform:Object.hasOwn(platforms,project.platform)?project.platform:'portrait',
+        outputFormat:project.outputFormat==='gif'?'gif':'png',
+        frameCount:Number.isInteger(project.frameCount)&&project.frameCount>=2&&project.frameCount<=16?project.frameCount:9,
+        frameDurationMs:Number.isInteger(project.frameDurationMs)&&project.frameDurationMs>=20&&project.frameDurationMs<=2000&&project.frameDurationMs%10===0?project.frameDurationMs:200,
         ratio:typeof project.ratio==='string'&&project.ratio.trim()?project.ratio:undefined,
         attachments:Array.isArray(project.attachments)?project.attachments:[],manualAttachments:project.manualAttachments===true,
         article:typeof project.article==='string'?project.article:undefined,
@@ -238,6 +242,7 @@ window.__ModuleLoader__.load({
       Promise.resolve().then(()=>fn(controller.signal)).then(()=>settle(),settle);
     }
     let latestProject=null;
+    let saveQueue=Promise.resolve();
     function selectedAssets(project,page) {
       return {
         ...Object.fromEntries(Object.entries(project.visual).filter(([,v])=>v!==undefined)),
@@ -531,7 +536,7 @@ window.__ModuleLoader__.load({
       useEffect(()=>{
         let stopped=false,url='';
         setPreview('');
-        if(page.image) renderPng(project,decorate(page,active),active).then(blob=>{
+        if(page.image && !isGif(page)) renderPng(project,decorate(page,active),active).then(blob=>{
           if(!stopped){url=URL.createObjectURL(blob);setPreview(url);}
         }).catch(e=>{if(!stopped)setError(e.message);});
         return()=>{stopped=true;if(url)URL.revokeObjectURL(url);};
@@ -554,7 +559,8 @@ window.__ModuleLoader__.load({
       }
       async function generate(target,index,signal){
         if(target.locked||signal.aborted)return;
-        const input={...promptInput(target,index),page:index+1};
+        const input={...promptInput(target,index),page:index+1,outputFormat:project.outputFormat||'png',
+          ...(project.outputFormat==='gif'?{frameCount:project.frameCount||9,frameDurationMs:project.frameDurationMs||200}:{})};
         if(target.upload)input.refs.upload=target.upload;
         const attachedImages=[...(project.attachments||[]),...(target.uploads||[])].filter(x=>x.kind==='image'&&x.data).map(x=>x.data);
         if(attachedImages.length)input.refs.attachments=attachedImages;
@@ -570,16 +576,23 @@ window.__ModuleLoader__.load({
         // 先把成图记进模块快照，切走面板或重新挂载都不会丢这一页。
         rememberProject(next);
         setProject(next);
-        await projectStore('put',next);
+        // 单张完成即可展示，同时避免旧快照的异步写入覆盖新结果。
+        saveQueue=saveQueue.catch(()=>{}).then(()=>projectStore('put',next));
+        await saveQueue;
       }
       async function batch(targets,signal){
         const failures=[];
-        for(const [i,x] of targets){
-          if(signal.aborted)break;
-          setBusy('正在生成第 '+(i+1)+' 页 · '+(x.title||roles[x.role][0]));
-          try { await generate(x,i,signal); }
-          catch(e){if(!signal.aborted)failures.push('第 '+(i+1)+' 页 '+e.message);}
-        }
+        let cursor=0,completed=0;
+        const workers=Array.from({length:Math.min(4,targets.length)},async()=>{
+          while(!signal.aborted && cursor<targets.length){
+            const [i,x]=targets[cursor++];
+            try { await generate(x,i,signal); }
+            catch(e){if(!signal.aborted)failures.push('第 '+(i+1)+' 页 '+e.message);}
+            completed++;
+            if(!signal.aborted)setBusy('正在生成批量任务 · 已完成 '+completed+'/'+targets.length+' 页');
+          }
+        });
+        await Promise.all(workers);
         await refreshProjects();
         if(failures.length)throw new Error(failures.join(' ｜ '));
       }
@@ -732,11 +745,16 @@ window.__ModuleLoader__.load({
       },[hydrated,view,inspector,previewKey,project.theme]);
 
       const generateOne=()=>settings?.configured?action('正在生成当前页',signal=>generate(page,active,signal)):setOpenSettings(true);
-      const exportPage=()=>action('导出本页',async()=>download(await renderPng(project,decorate(page,active),active),'page-'+String(active+1).padStart(2,'0')+'.png'));
+      const exportPage=()=>action('导出本页',async()=>{
+        const gif=isGif(page);
+        download(gif?await(await fetch(page.image)).blob():await renderPng(project,decorate(page,active),active),
+          'page-'+String(active+1).padStart(2,'0')+(gif?'.gif':'.png'));
+      });
       const [copiedImage,setCopiedImage]=useState(false);
       const copyImage=()=>{
         if(!page.image)return;
         action('正在复制图片',async()=>{
+          if(isGif(page))throw new Error('GIF 动画请使用下载 GIF；剪贴板不支持保留动画。');
           if(!navigator.clipboard?.write||typeof ClipboardItem==='undefined')throw new Error('当前环境不支持复制图片，请改用「下载 PNG」。');
           const blob=await renderPng(project,decorate(page,active),active);
           try {
@@ -752,7 +770,11 @@ window.__ModuleLoader__.load({
       };
       const exportAll=()=>action('导出整套',async()=>{
         const files=[];
-        for(const [i,x] of project.pages.entries()) files.push({name:String(i+1).padStart(2,'0')+'-'+roles[x.role][0].replaceAll('/','-')+'.png',blob:await renderPng(project,decorate(x,i),i)});
+        for(const [i,x] of project.pages.entries()){
+          const gif=isGif(x);
+          files.push({name:String(i+1).padStart(2,'0')+'-'+roles[x.role][0].replaceAll('/','-')+(gif?'.gif':'.png'),
+            blob:gif?await(await fetch(x.image)).blob():await renderPng(project,decorate(x,i),i)});
+        }
         download(await zip(files),'pose-studio-'+project.platform+'.zip');
       });
       const assetCard=(kind,global=false)=>{
@@ -825,7 +847,7 @@ window.__ModuleLoader__.load({
           h('div',{className:'line'},Button('选择文件夹…',()=>chooseOutputDirectory(),{disabled:!!busy}),
             (outputPath??settings?.outputDirectory)&&Button('关闭自动保存',()=>setOutputPath(''),{disabled:!!busy})),
           h('p',{style:{overflowWrap:'anywhere'}},(outputPath??settings?.outputDirectory)||'尚未选择文件夹'),
-          h('small',null,'选择后点击保存设置。PNG 原图将自动保存到运行 DSH 的电脑。')),
+          h('small',null,'选择后点击保存设置。PNG / GIF 原图将自动保存到运行 DSH 的电脑。')),
         directoryListing&&h('div',{className:'box stack',role:'region','aria-label':'选择保存文件夹'},
           h('div',{className:'line spread'},h('h2',null,'选择保存文件夹'),Button('取消',()=>setDirectoryListing(null),{disabled:!!busy})),
           h('div',{className:'line'},directoryListing.crumbs.map(crumb=>Button(crumb.name,()=>chooseOutputDirectory('list',crumb.path),{key:crumb.path,disabled:!!busy}))),
@@ -1026,8 +1048,8 @@ window.__ModuleLoader__.load({
               h('div',{className:'empty-preview'},h('h2',null,page.title||'当前画面'),h('p',null,page.brief||'生成后在这里查看图片。'),page.body&&h('p',{className:'muted'},page.body)),
             h('div',{className:'line'},Button(page.image?'重做本页':'生成本页',generateOne,{className:'primary',disabled:!canGenerate}),
               project.pages.length>1&&Button('生成剩余 '+remaining.length+' 页',()=>settings?.configured?action('正在生成批量任务',signal=>batch(remaining,signal)):setOpenSettings(true),{disabled:!!busy||!remaining.length}),
-              page.image&&Button('下载 PNG',exportPage,{disabled:!!busy}),
-              page.image&&Button(copiedImage?'已复制':'复制图片',copyImage,{disabled:!!busy,title:'把这张成图复制到剪贴板','aria-label':'复制图片到剪贴板'}),
+              page.image&&Button(isGif(page)?'下载 GIF':'下载 PNG',exportPage,{disabled:!!busy}),
+              page.image&&!isGif(page)&&Button(copiedImage?'已复制':'复制图片',copyImage,{disabled:!!busy,title:'把这张成图复制到剪贴板','aria-label':'复制图片到剪贴板'}),
               project.pages.length>1&&Button('导出整套 ZIP',exportAll,{disabled:!!busy||project.pages.some(x=>!x.image)}))),
           h('aside',{className:'box stack inspector','aria-label':'图片设置'},
             h('div',{className:'line inspector-tabs'},Object.entries(panels).map(([id,name])=>Button(name,()=>setInspector(id),{key:id,'aria-pressed':inspector===id}))),
@@ -1047,7 +1069,14 @@ h('p',{className:'muted'},'点图片即可在独立画廊更换。'),
             inspector==='direction'?creativeDirection:
             inspector==='prompt'?promptPanel:
             h('fieldset',{className:'stack',disabled:!!busy},
-              h('small',null,'作用于全套图片。单张图仍可在素材页单独替换。'),h('strong',null,'画幅与导出尺寸'),choices('画幅与导出尺寸',platforms,project.platform,id=>update({platform:id,ratio:undefined,pages:project.pages.map(x=>({...x,format:undefined,direction:{...x.direction,ratio:undefined}}))})),
+              h('small',null,'作用于全套图片。单张图仍可在素材页单独替换。'),
+          h('strong',null,'输出格式'),
+          choices('输出格式',{'png':'静态 PNG','gif':'动画 GIF'},project.outputFormat||'png',v=>update({outputFormat:v})),
+          project.outputFormat==='gif'&&h('div',{className:'stack'},
+            h('small',null,'仅 gpt-image-2.6 系列模型支持尝试原生 GIF；不支持参考图。GIF 保留原始动画，不叠加本地排版。'),
+            h('label',{className:'field'},'帧数（2–16）',h('input',{type:'number',min:2,max:16,step:1,value:project.frameCount||9,onChange:e=>update({frameCount:Number(e.target.value)})})),
+            h('label',{className:'field'},'每帧时长（毫秒，20–2000）',h('input',{type:'number',min:20,max:2000,step:10,value:project.frameDurationMs||200,onChange:e=>update({frameDurationMs:Number(e.target.value)})}))),
+          h('strong',null,'画幅与导出尺寸'),choices('画幅与导出尺寸',platforms,project.platform,id=>update({platform:id,ratio:undefined,pages:project.pages.map(x=>({...x,format:undefined,direction:{...x.direction,ratio:undefined}}))})),
             h('label',{className:'field'},'画幅比例',h('input',{value:project.ratio??presetRatio(project.platform),placeholder:'例如 3:4',onBlur:e=>{if(!e.target.value.trim())update({ratio:undefined});},onChange:e=>update({ratio:e.target.value,pages:project.pages.map(x=>({...x,format:undefined,direction:{...x.direction,ratio:undefined}}))})})),
             h('strong',null,'整套参考'),h('div',{className:'reference-grid'},['style','style2','color','face','clothes'].map(kind=>assetCard(kind,true))),
             Button('保存项目',()=>action('保存项目',async()=>{await projectStore('put',project);await refreshProjects();}))))),
