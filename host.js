@@ -166,10 +166,14 @@ export async function generate(body, settings, list, signal) {
   };
   const compiled = body.design ? await compilePrompt({design:body.design,refs:inputRefs,model:settings.model,list,size:options.size}) : null;
   const refs = compiled?.refs ?? inputRefs;
+  if (isGif && (refs.upload || refs.anchor || inputRefs.attachments?.length)) {
+    throw fail(400, 'GIF 暂不支持上传图片或整套参考图，请先移除。');
+  }
   const hasUpload = Boolean(refs.upload);
   const files = [], instructions = [], identityRefs = [];
   for (const [kind, role] of Object.entries(roles)) {
-    if (!refs[kind]) continue;
+    // GIF 端点只接受文生图：素材画风通过编译后的文本描述传递，不上传素材图片。
+    if (isGif || !refs[kind]) continue;
     let blob, detail = '';
     if (kind === 'upload' || kind === 'anchor') blob = uploadImage(refs[kind]);
     else {
@@ -198,7 +202,6 @@ export async function generate(body, settings, list, signal) {
       instructions.push(`参考图 ${files.length}：用户随主题上传的实拍图，作为主体与画面依据：保留图中对象最可识别的特征（人物的五官与体型、动物的外观、商品的形状材质与文字、场景的结构与关键物件）；${refs.clothes ? '人物服装以「服装」参考图为准' : '人物服装与配饰沿用上传图'}。不要只当作风格或构图参考。`);
     }
   }
-  if (isGif && files.length) throw fail(400, '当前号池 GIF 仅支持文生图，请移除素材、上传图和整套参考图后重试。');
   const guard = identityGuard(identityRefs, refs);
   const base = compiled ? compiled.withReferences(instructions) : [body.prompt.trim(), ...instructions].join('\n');
   const prompt = guard ? base + '\n' + guard : base;
