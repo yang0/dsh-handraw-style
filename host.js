@@ -93,6 +93,43 @@ function gateway(settings = {}) {
   return url;
 }
 
+/** Fetch the image model catalog using the current gateway, never exposing API keys to the browser. */
+export async function imageModels(body = {}, stored, signal) {
+  const baseUrl = typeof body.baseUrl === 'string' ? body.baseUrl.trim() : '';
+  if (baseUrl.length > 2048) throw fail(400, 'Base URL 过长。');
+  const selected = gateway({ baseUrl: baseUrl || stored.baseUrl });
+  const previous = gateway(stored);
+  const enteredKey = typeof body.key === 'string' ? body.key.trim() : '';
+  if (enteredKey && !/^[!-~]{8,512}$/.test(enteredKey)) throw fail(400, 'API Key 格式无效。');
+  // Never send an existing credential to a different endpoint until the user explicitly provides its key.
+  if (selected.origin !== previous.origin && !enteredKey) {
+    throw fail(400, '更换接口地址后，请先填写新接口的 API Key，再刷新模型。');
+  }
+  const key = enteredKey || stored.key || process.env.OPENAI_API_KEY;
+  if (!key) throw fail(400, '请先填写 API Key，再刷新模型列表。');
+  let response;
+  try {
+    response = await fetch(new URL('models', selected), {
+      headers: { Authorization: 'Bearer ' + key },
+      redirect: 'error',
+      signal: AbortSignal.any([signal, AbortSignal.timeout(15000)]),
+    });
+  } catch (error) {
+    if (signal.aborted) throw error;
+    throw fail(502, error.name === 'TimeoutError' ? '拉取模型超时，请检查接口地址。' : '无法连接模型接口，请检查 Base URL 与网络。');
+  }
+  if (!response.ok) {
+    const failure = await upstreamFailure(response);
+    throw fail(502, '拉取模型失败（HTTP ' + response.status + '）' + (failure.message ? '：' + failure.message : '，请检查 API Key 与接口地址。'));
+  }
+  let catalog;
+  try { catalog = await response.json(); } catch { throw fail(502, '模型接口没有返回有效 JSON。'); }
+  if (!Array.isArray(catalog?.data)) throw fail(502, '模型接口未返回 data 模型列表。');
+  const models = [...new Set(catalog.data.map(entry => entry?.id).filter(id =>
+    typeof id === 'string' && /^gpt-image-[a-z0-9.-]{1,70}$/.test(id)))].sort((a,b) => a.localeCompare(b, undefined, { numeric:true }));
+  return { models };
+}
+
 function assets() {
   const cache = new Map();
   return function list(kind) {
@@ -453,6 +490,8 @@ export function apply(ctx) {
     const settings = await config();
     return json({ model:settings.model, configured:Boolean(settings.key || process.env.OPENAI_API_KEY), endpoint:gateway(settings).href, outputDirectory:settings.outputDirectory||'' });
   });
+  route('image-models', ['POST'], async (request, _, signal) =>
+    json(await imageModels(await readJson(request, 4096), await config(), signal)));
   route('output-directory-picker', ['POST'], async (request, _, signal) => {
     const body=await readJson(request,8192);
     const picker=typeof ctx.get==='function'?ctx.get('directoryPicker'):ctx.reflect?.get('directoryPicker');
