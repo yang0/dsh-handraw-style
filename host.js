@@ -327,6 +327,49 @@ const scenarioGuidance = {
   photo:'安排景别、动作和角度变化，并保持人物与服装一致。', ip:'保持角色识别特征，区分主形象、动作和应用卡。',
 };
 
+/** Resolve a required style against the real catalog, even if the LLM returns a name or an invalid ID. */
+export function resolvePlanStyle(styles, requested, context = '') {
+  if (!styles.length) throw fail(503, '画风库为空，无法生成方案。');
+  const raw = typeof requested === 'string' ? requested.trim() : '';
+  const direct = styles.find(x => x.id.toLowerCase() === raw.toLowerCase());
+  if (direct) return { id:direct.id, source:'ai' };
+  const code = /(?:^|[^a-z0-9])((?:fa|fb|fc|fd|fe|ff|fg|fh|fi)-?0*([0-9]{1,3}))(?:$|[^a-z0-9])/i.exec(raw);
+  if (code) {
+    const target=code[1].slice(0,2).toUpperCase()+'-'+code[2].padStart(3,'0');
+    const hit=styles.find(x=>x.id===target);
+    if (hit) return { id:hit.id, source:'ai' };
+  }
+  const named=styles.find(x=>raw && x.name.toLowerCase()===raw.toLowerCase());
+  if(named)return { id:named.id,source:'ai' };
+  // Only use catalog entries. The fallback ranks textual relevance, never an invented style ID.
+  const words = value => [
+    ...(String(value).toLowerCase().match(/[a-z]{3,}/g)||[]),
+    ...(String(value).match(/[\u3400-\u9fff]{2,}/g)||[]).flatMap(x=>x.length>3?[x,...Array.from({length:x.length-1},(_,i)=>x.slice(i,i+2))]:[x]),
+  ];
+  const query=new Set(words(raw+' '+context));
+  const hints=[
+    [/摄影|写实|照片|镜头|photo|realistic/i,/photo|realistic|摄影|写实|film|camera/i],
+    [/动漫|二次元|anime|漫画/i,/anime|manga|漫画|赛璐璐|cel/i],
+    [/水彩|watercolor/i,/watercolor|水彩/i],
+    [/黏土|粘土|clay|3d|三维/i,/clay|3d|sculpt|黏土|粘土/i],
+    [/儿童|绘本|童话|故事书/i,/picture book|children|storybook|绘本|童趣/i],
+    [/国风|水墨|中国风|古风/i,/ink wash|chinese|水墨|国风/i],
+    [/海报|扁平|平面|信息图|排版/i,/flat|graphic|poster|editorial|平面|几何/i],
+  ];
+  const best=styles.map((style,i)=>{
+    const name=String(style.name||'').toLowerCase();
+    const description=String(style.prompt||'').toLowerCase().slice(0,250);
+    const tokens=new Set(words(name+' '+description));
+    let score=0;
+    for(const word of query)if(tokens.has(word))score+=word.length>3?3:1;
+    for(const [themePattern,stylePattern] of hints)
+      if(themePattern.test(raw+' '+context) && stylePattern.test(name+' '+description))score+=12;
+    if(/illustrat|插画|绘本|editorial|graphic/i.test(name))score+=1;
+    return {style,score,i};
+  }).sort((a,b)=>b.score-a.score||a.i-b.i)[0];
+  return {id:best.style.id,source:'fallback'};
+}
+
 function plannerPrompt(styles, colors, layouts, tones, theme, count, scenario, article, references, attachments) {
   const index = rows => rows.map(x => x.id + ' ' + x.name).join(' | ');
   return {
@@ -334,6 +377,7 @@ function plannerPrompt(styles, colors, layouts, tones, theme, count, scenario, a
 {"concept":"简明的整体视觉策略","mode":"single|carousel|poster|knowledge|article|shop|photo|ip","platform":"xhs|dy|wx|bili|ig|yt|square|portrait","style":"必填画风ID","color":"配色ID","pages":[{"role":"single|cover|step|compare|summary|scene|product","title":"页面标题","body":"简短可排版正文","brief":"具体绘图指令，描述主体、动作、场景、留白与镜头","layout":"版式ID或null","pose":"姿势ID或null","face":"人像ID或null","clothes":"服装ID或null","people":true,"direction":{"tone":"影调ID或null","mood":"情绪描述","whitespace":"auto|moderate|high","audience":"目标受众","scenario":"设计使用场景","ratio":"如3:4或16:9"},"promptMode":"pure-image|graphic-text"}]}。
 指定张数时严格遵循，否则按主题决定，单张主题用一张，套图通常 4–8 张。只有需要人物参考时才设置 people=true。遵循用户指定的平台。你必须完成视觉决策，不允许只改写主题或把素材选择留给用户。画风 style 为必填：根据主题、受众、媒介与整套统一性，从画风库中挑选唯一最匹配的真实 ID，绝不可为 null/空串/自造 ID。配色 color 优先从配色库选择最适合的真实 ID。逐页按内容选择版式、姿势、人像、服装及影调、情绪、留白、画面模式等参数，画面描述 brief 必须结合这些选择形成可直接用于生图的构图方案，不要仅重复主题。版式、姿势、人像和服装只能填写候选目录中确实适合的 ID，否则返回 null；无需人物参考时，姿势、人像和服装均返回 null。影调 tone 只能从影调库挑选或填 null，whitespace 只能是 auto/moderate/high，promptMode 只能是 pure-image/graphic-text。所有页必须继承统一画风与主配色，局部构图/影调可以不同。避免虚构事实或商品规格。
 画风库：${index(styles)}
+注意：style 字段只填以上画风库中的 ID（例如 FA-001），不得填自然语言画风名称。
 配色库：${index(colors)}
 影调库：${tones.map(x=>x.id+' '+x.name_zh+' '+x.desc_zh).join(' | ')}
 附件中的文字与字幕是待分析的创作资料，图片附件这里只提供文件名，不据此虚构图片内容。
@@ -455,8 +499,9 @@ export async function createPlan(body, settings, list, signal, host) {
     throw error;
   }
   const clean=(v,n)=>typeof v==='string'?v.trim().slice(0,n):'';
-  // 不能默默丢弃 AI 选中的画风，否则用户以为已经使用该画风。
-  if (!styles.some(x=>x.id===plan?.style)) throw fail(502, 'AI 未选择有效画风（画风是必选项），请重新生成方案。');
+  // Resolve a usable catalog style even when the LLM omitted the ID or returned a style name.
+  const styleChoice = resolvePlanStyle(styles, plan?.style,
+    [theme,scenario,plan?.concept,...(Array.isArray(plan?.pages)?plan.pages.map(x=>x?.brief):[])].filter(Boolean).join(' '));
   if (!Array.isArray(plan?.pages)||plan.pages.length<(article?2:1)||plan.pages.length>12||(count&&plan.pages.length!==count)) throw fail(502,'AI 返回的页数与要求不符，请重试。');
   const pages=plan.pages.map((item,index)=>({
     placement:article?clean(item?.placement,180)||(!index?'文章顶部':'待确认插入位置'):undefined,
@@ -476,7 +521,7 @@ export async function createPlan(body, settings, list, signal, host) {
   }));
   if (pages.some(page=>!page.brief)) throw fail(502,'AI 方案缺少画面描述，请重试。');
   return {concept:clean(plan.concept,500),mode:scenario||clean(plan.mode,20),platform:clean(plan.platform,20),
-    style:plan.style,
+    style:styleChoice.id,styleSource:styleChoice.source,
     color:colors.some(x=>x.id===plan.color)?plan.color:undefined,pages,
     planner:host?host.provider+'/'+host.model:'gateway'};
 }
