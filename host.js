@@ -445,8 +445,7 @@ export async function createPlan(body, settings, list, signal, host) {
   const candidates=async kind=>{
     const rows=await list(kind).catch(error=>{if(error.status===404)return [];throw error;});
     const matching=rows.filter(x=>[x.group,...x.name.split(/[ ·・，、]/)].some(word=>word?.length>=2&&terms.includes(word.toLowerCase())));
-    const sample=Array.from({length:Math.min(80,rows.length)},(_,i)=>rows[Math.floor(i*rows.length/Math.min(80,rows.length))]);
-    return [...new Map([...matching.slice(0,40),...sample].map(x=>[x.id,x])).values()];
+    return shortlist([...new Map([...matching,...rows].map(x=>[x.id,x])).values()],terms,kind,36);
   };
   const [pose,face,clothes]=await Promise.all(['pose','face','clothes'].map(candidates));
   const references={pose,face,clothes};
@@ -476,24 +475,31 @@ export async function createPlan(body, settings, list, signal, host) {
   const styleChoice=resolvePlanStyle(styles,plan?.style,fullContext);
   const colorChoice=chooseCatalog(colors,plan?.color,fullContext,'color',true);
   if (!Array.isArray(plan?.pages)||plan.pages.length<(article?2:1)||plan.pages.length>12||(count&&plan.pages.length!==count)) throw fail(502,'AI 返回的页数与要求不符，请重试。');
-  const pages=plan.pages.map((item,index)=>({
+  const pages=plan.pages.map((item,index)=>{
+    const role=article?(index===0?'cover':'scene'):['single','cover','step','compare','summary','scene','product'].includes(item?.role)?item.role:'single';
+    const pageContext=[fullContext,item?.title,item?.brief,role].filter(Boolean).join(' ');
+    // Graphic-heavy pages need an actual layout. Photography/scene pages can remain free-form.
+    const layoutChoice=chooseCatalog(layouts,item?.layout,pageContext,'layout',!['single','scene'].includes(role));
+    const toneChoice=chooseCatalog(tones,item?.direction?.tone,pageContext,'tone',false);
+    return {
     placement:article?clean(item?.placement,180)||(!index?'文章顶部':'待确认插入位置'):undefined,
-    role:article?(index===0?'cover':'scene'):['single','cover','step','compare','summary','scene','product'].includes(item?.role)?item.role:'single',
+    role,
     title:clean(item?.title,120), body:clean(item?.body,350), brief:clean(item?.brief,1000),
-    layout:chooseCatalog(layouts,item?.layout,[fullContext,item?.title,item?.brief,item?.role].filter(Boolean).join(' '),'layout',false).id,
+    layout:layoutChoice.id,layoutSource:layoutChoice.source,
     people:item?.people===true,
-    promptMode:['pure-image','graphic-text'].includes(item?.promptMode)?item.promptMode:undefined,
+    promptMode:['pure-image','graphic-text'].includes(item?.promptMode)?item.promptMode:(layoutChoice.id?'graphic-text':'pure-image'),
     direction:{
-      ...(chooseCatalog(tones,item?.direction?.tone,[fullContext,item?.brief].join(' '),'tone',false).id
-        ? {tone:chooseCatalog(tones,item?.direction?.tone,[fullContext,item?.brief].join(' '),'tone',false).id} : {}),
+      ...(toneChoice.id?{tone:toneChoice.id}:{}),
       ...(clean(item?.direction?.mood,120)?{mood:clean(item.direction.mood,120)}:{}),
       ...(clean(item?.direction?.audience,120)?{audience:clean(item.direction.audience,120)}:{}),
       ...(clean(item?.direction?.scenario,120)?{scenario:clean(item.direction.scenario,120)}:{}),
       whitespace:['auto','moderate','high'].includes(item?.direction?.whitespace)?item.direction.whitespace:'auto',
       ...(/^\d{1,3}(?::|：)\d{1,3}$/.test(item?.direction?.ratio||'')?{ratio:item.direction.ratio}:{}),
     },
-    ...Object.fromEntries(Object.entries(references).map(([kind,rows])=>[kind,item?.people===true&&rows.some(x=>x.id===item[kind])?item[kind]:undefined])),
-  }));
+    ...Object.fromEntries(Object.entries(references).map(([kind,rows])=>[
+      kind,item?.people===true?chooseCatalog(rows,item[kind],pageContext,kind,false).id:undefined])),
+  };
+  });
   if (pages.some(page=>!page.brief)) throw fail(502,'AI 方案缺少画面描述，请重试。');
   return {concept:clean(plan.concept,500),mode:scenario||clean(plan.mode,20),platform:clean(plan.platform,20),
     style:styleChoice.id,styleSource:styleChoice.source,
