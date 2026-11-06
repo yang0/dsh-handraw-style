@@ -31,7 +31,7 @@ function identityGuard(indices, refs) {
     : `参考图 ${indices[0]} 是用户上传的图，必须真实作为主体依据，不能只当风格、构图或配色参考。先判断图中是什么，再保留它最可识别的特征：人物保留脸型、五官比例、发型、肤色、体型与年龄感；动物保留毛色、花纹、体型与脸型；商品保留形状、比例、材质、颜色、商标与文字；场景保留结构、布局、光线与关键物件。`;
   return `【上传图一致性硬性要求】${subject}${outfit}${pose}${face}画风、配色、版式只决定画法与气质，不得替换主体本身。冲突时以用户上传图的特征为优先。`;
 }
-const defaults = { model: 'gpt-image-2', size: '1024x1536', quality: 'medium' };
+const defaults = { model: 'gpt-image-2.6', size: '1024x1536', quality: 'medium' };
 const dataDir = join(process.env.DSH_HOME || join(homedir(), '.dsh'), 'pose-studio');
 const configFile = join(dataDir, 'openai.json');
 const fail = (status, message) => Object.assign(new Error(message), { status });
