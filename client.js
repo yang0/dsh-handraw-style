@@ -395,6 +395,32 @@ window.__ModuleLoader__.load({
       const [key,setKey]=useState('');
       const [revealed,setRevealed]=useState(false);
       const [baseUrl,setBaseUrl]=useState(null);
+      const [modelChoices,setModelChoices]=useState([]);
+      const [modelStatus,setModelStatus]=useState('');
+      const [modelsLoading,setModelsLoading]=useState(false);
+      const modelRequest=useRef(null);
+      async function refreshImageModels(endpoint=baseUrl??settings?.endpoint,enteredKey=key){
+        modelRequest.current?.abort();
+        const controller=new AbortController();
+        modelRequest.current=controller;
+        setModelsLoading(true);setModelStatus('');
+        try {
+          const result=await (await request('image-models',{baseUrl:endpoint,key:enteredKey},controller.signal)).json();
+          if(controller.signal.aborted)return;
+          setModelChoices(result.models);
+          if(!result.models.length)setModelStatus('接口没有公布 GPT Image 生图模型，请检查号池是否正常运行。');
+          else if(!result.models.includes(settings?.model))setModelStatus('当前已保存的模型不在接口列表中，请从下拉框选择一个可用模型。');
+        } catch(error){
+          if(!controller.signal.aborted){setModelChoices([]);setModelStatus(error.message);}
+        } finally {
+          if(modelRequest.current===controller){modelRequest.current=null;setModelsLoading(false);}
+        }
+      }
+      useEffect(()=>{
+        if(!openSettings||!settings)return;
+        refreshImageModels(settings.endpoint,'');
+        return()=>modelRequest.current?.abort();
+      },[openSettings,settings?.endpoint]);
       const [outputPath,setOutputPath]=useState(null);
       const [directoryListing,setDirectoryListing]=useState(null);
       const [folderName,setFolderName]=useState('');
@@ -839,10 +865,19 @@ window.__ModuleLoader__.load({
       const renderSettings=()=>h('section',{className:'shell box stack settings-panel'},
         h('div',{className:'line spread'},h('h2',null,'设置'),Button('关闭',closeSettings,{disabled:!!busy})),
         h('small',null,'生成方案使用 DSH 宿主的默认模型，无需在此填写；这里的接口只用于生图和参考图编辑。'),
-        h('label',{className:'field'},'Base URL',h('input',{value:baseUrl??settings?.endpoint??'',placeholder:'http://127.0.0.1:38650/v1',onChange:e=>setBaseUrl(e.target.value)})),
+        h('label',{className:'field'},'Base URL',h('input',{value:baseUrl??settings?.endpoint??'',placeholder:'http://127.0.0.1:38650/v1',onChange:e=>{modelRequest.current?.abort();setBaseUrl(e.target.value);setModelChoices([]);setModelStatus('地址已更改，请刷新模型列表。');}})),
         h('small',null,'本机可用 HTTP，远程中转站请用 HTTPS。'),
-        h('label',{className:'field'},'GPT Image 模型',h('input',{value:settings?.model||'',onChange:e=>setSettings({...settings,model:e.target.value})})),
-        h('label',{className:'field'},'API Key',h('input',{value:key,type:revealed?'text':'password',autoComplete:'off',spellCheck:false,placeholder:settings?.configured?'留空保留现有 Key':'输入 API Key',onChange:e=>setKey(e.target.value)})),
+        h('div',{className:'field'},
+          h('div',{className:'line spread'},h('strong',null,'生图模型'),
+            Button(modelsLoading?'正在拉取…':'刷新模型',()=>refreshImageModels(),{disabled:modelsLoading||!!busy})),
+          h('select',{'aria-label':'选择生图模型',value:settings?.model||'',disabled:modelsLoading||!!busy,
+            onChange:e=>setSettings({...settings,model:e.target.value})},
+            [...new Set([settings?.model,...modelChoices].filter(Boolean))].map(model=>
+              h('option',{key:model,value:model},model+(modelChoices.length&&!modelChoices.includes(model)?'（原配置）':'')))),
+          modelStatus&&h('small',{className:modelChoices.length?'muted':'error',role:'status'},modelStatus),
+          !modelStatus&&h('small',null,'只展示接口 /v1/models 返回的 GPT Image 生图模型。')),
+
+        h('label',{className:'field'},'API Key',h('input',{value:key,type:revealed?'text':'password',autoComplete:'off',spellCheck:false,placeholder:settings?.configured?'留空保留现有 Key':'输入 API Key',onChange:e=>{setKey(e.target.value);modelRequest.current?.abort();setModelChoices([]);setModelStatus('API Key 已更改，请刷新模型列表。');}})),
         h('div',{className:'field'},h('strong',null,'生成图片保存目录'),
           h('div',{className:'line'},Button('选择文件夹…',()=>chooseOutputDirectory(),{disabled:!!busy}),
             (outputPath??settings?.outputDirectory)&&Button('关闭自动保存',()=>setOutputPath(''),{disabled:!!busy})),
