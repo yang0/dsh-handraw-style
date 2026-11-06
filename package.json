@@ -30,6 +30,7 @@
     "gallery",
     "import-gallery.js",
     "prompt.js",
+    "planning-selection.js",
     "output-directory.js"
   ]
 }
