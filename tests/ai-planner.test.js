@@ -53,7 +53,7 @@ test('invalid parameter choices are safely dropped', async () => {
   const plan=await withPlan({...validPlan,pages:[{...validPlan.pages[0],layout:'SC-999',promptMode:'unknown',
     direction:{tone:'T-999',whitespace:'unknown',ratio:'invalid'}}]},planRequest);
   assert.equal(plan.pages[0].layout,undefined);
-  assert.equal(plan.pages[0].promptMode,'graphic-text');
+  assert.equal(plan.pages[0].promptMode,'pure-image');
   assert.equal(plan.pages[0].direction.tone,undefined);
   assert.equal(plan.pages[0].direction.whitespace,'auto');
   assert.equal(plan.pages[0].direction.ratio,undefined);
