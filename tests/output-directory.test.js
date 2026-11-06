@@ -31,3 +31,12 @@ test('concurrent generations save complete originals under unique names', async 
   assert.equal((await readdir(folder)).filter(name => name.endsWith('.tmp')).length, 0);
   assert.equal(await saveGeneratedImage('', bytes), undefined);
 });
+
+test('saves native GIF bytes with .gif extension and rejects unknown formats', async () => {
+  const folder = join(temporary, 'animations');
+  const gif = Buffer.from('GIF89a sample');
+  const path = await saveGeneratedImage(folder, gif, 3, 'gif');
+  assert.match(path, /-p03-.*\.gif$/);
+  assert.deepEqual(await readFile(path), gif);
+  await assert.rejects(saveGeneratedImage(folder, gif, 3, 'webp'), { status: 400 });
+});
