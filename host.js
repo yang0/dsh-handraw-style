@@ -151,6 +151,13 @@ export async function generate(body, settings, list, signal) {
   const key = settings.key || process.env.OPENAI_API_KEY;
   if (!key) throw fail(400, '请先在接口设置中保存 OpenAI API Key。');
   if (typeof body.prompt !== 'string' || !body.prompt.trim() || body.prompt.length > 8000) throw fail(400, '请输入 1–8000 字的画面描述。');
+  const isGif = body.outputFormat === 'gif';
+  if (body.outputFormat !== undefined && !['png', 'gif'].includes(body.outputFormat)) throw fail(400, '输出格式无效。');
+  if (isGif) {
+    if (!['gpt-image-2.6', 'gpt-image-2.6-flare', 'gpt-image-2.6-sunburst'].includes(settings.model)) throw fail(400, 'GIF 需要 gpt-image-2.6 系列模型，请在接口设置中切换。');
+    if (!Number.isInteger(body.frameCount) || body.frameCount < 2 || body.frameCount > 16) throw fail(400, 'GIF 帧数须为 2–16。');
+    if (!Number.isInteger(body.frameDurationMs) || body.frameDurationMs < 20 || body.frameDurationMs > 2000 || body.frameDurationMs % 10) throw fail(400, 'GIF 每帧时长须为 20–2000 毫秒，按 10 毫秒递增。');
+  }
   const inputRefs = body.refs ?? {};
   const options = {
     model: settings.model,
@@ -191,6 +198,7 @@ export async function generate(body, settings, list, signal) {
       instructions.push(`参考图 ${files.length}：用户随主题上传的实拍图，作为主体与画面依据：保留图中对象最可识别的特征（人物的五官与体型、动物的外观、商品的形状材质与文字、场景的结构与关键物件）；${refs.clothes ? '人物服装以「服装」参考图为准' : '人物服装与配饰沿用上传图'}。不要只当作风格或构图参考。`);
     }
   }
+  if (isGif && files.length) throw fail(400, '当前号池 GIF 仅支持文生图，请移除素材、上传图和整套参考图后重试。');
   const guard = identityGuard(identityRefs, refs);
   const base = compiled ? compiled.withReferences(instructions) : [body.prompt.trim(), ...instructions].join('\n');
   const prompt = guard ? base + '\n' + guard : base;
@@ -205,7 +213,7 @@ export async function generate(body, settings, list, signal) {
     }
   } else {
     headers['Content-Type'] = 'application/json';
-    payload = JSON.stringify({ ...options, prompt });
+    payload = JSON.stringify({ ...options, prompt, ...(isGif ? { output_format:'gif', frame_count:body.frameCount, frame_duration_ms:body.frameDurationMs } : {}) });
   }
   const result = await fetch(new URL(files.length ? 'images/edits' : 'images/generations', gateway(settings)), {
     method: 'POST', headers, body: payload, redirect: 'error',
@@ -226,10 +234,13 @@ export async function generate(body, settings, list, signal) {
   const encoded = data?.[0]?.b64_json;
   if (typeof encoded !== 'string' || !/^[A-Za-z0-9+/=]+$/.test(encoded)) throw fail(502, '接口未返回 GPT Image 的 b64_json 图片。');
   const bytes=Buffer.from(encoded, 'base64');
-  const headersOut={ 'Content-Type':'image/png', 'Cache-Control':'no-store' };
+  const actualGif = bytes.length >= 6 && ['GIF87a', 'GIF89a'].includes(bytes.subarray(0, 6).toString('ascii'));
+  if (isGif && !actualGif) throw fail(502, '号池没有返回原生 GIF 动画，请确认账号和模型支持 GIF。');
+  if (!isGif && actualGif) throw fail(502, '接口返回了意外的 GIF，请调整输出格式后重试。');
+  const headersOut={ 'Content-Type':actualGif ? 'image/gif' : 'image/png', 'Cache-Control':'no-store' };
   if(settings.outputDirectory){
     try {
-      const path=await saveGeneratedImage(settings.outputDirectory,bytes,body.page);
+      const path=await saveGeneratedImage(settings.outputDirectory,bytes,body.page,actualGif ? 'gif' : 'png');
       headersOut['X-Pose-Studio-Saved-Path']=encodeURIComponent(path);
     } catch {
       headersOut['X-Pose-Studio-Save-Error']=encodeURIComponent('图片已生成，但自动保存失败，请检查保存目录或磁盘空间，并先下载图片。');
@@ -421,7 +432,6 @@ export function apply(ctx) {
   const list = assets();
   const lifetime = new AbortController();
   ctx.effect(() => () => lifetime.abort());
-  let busy = false;
   function route(suffix, methods, handler) {
     ctx.effect(() => ctx.connection.fetch.register({
       path: '/api/pose-studio.' + suffix, methods, requestBody: suffix === 'generate' ? 'streaming' : 'buffered',
@@ -489,10 +499,6 @@ export function apply(ctx) {
     const blob = await image(kind, path);
     return new Response(blob, { headers: { 'Content-Type': blob.type, 'Cache-Control': 'private, max-age=86400' } });
   });
-  route('generate', ['POST'], async (request, _, signal) => {
-    if (busy) throw fail(409, '已有一张图正在生成。');
-    busy = true;
-    try { return await generate(await readJson(request, 40 * 1024 * 1024), await config(), list, signal); }
-    finally { busy = false; }
-  });
+  route('generate', ['POST'], async (request, _, signal) =>
+    generate(await readJson(request, 40 * 1024 * 1024), await config(), list, signal));
 }
