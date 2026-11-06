@@ -63,7 +63,7 @@ export function rankCatalog(rows, context, kind='style') {
 /** Balanced shortlist when many unrelated catalog items exist. Always sorted by semantic relevance. */
 export function shortlist(rows, context, kind, limit=48) {
   const ranked=rankCatalog(rows,context,kind);
-  if(ranked.length<=limit)return rows;
+  if(ranked.length<=limit)return ranked.map(hit=>hit.item);
   const chosen=[],seen=new Set(),groupCounts=new Map();
   for(const hit of ranked) {
     const group=hit.item.group||hit.item.id?.split('-')[0]||'default';
