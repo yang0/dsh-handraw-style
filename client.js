@@ -645,7 +645,7 @@ window.__ModuleLoader__.load({
         const platform=Object.hasOwn(platforms,plan.platform)?plan.platform:modes[mode][1];
         const next={...project,theme,mode,platform,article,attachments,manualAttachments:false,concept:plan.concept||'已按主题规划画面与参考素材。',anchor:'',
           plannerModel:typeof plan.planner==='string'?plan.planner:undefined,
-          visual:{style:plan.style,styleExplicit:true,color:plan.color},
+          visual:{style:plan.style,styleExplicit:true,styleSource:plan.styleSource,color:plan.color,colorSource:plan.colorSource},
           pages:plan.pages.map(x=>({...blankPage(x.role,x.title,x.body),brief:x.brief,placement:x.placement,format:article?(x.role==='cover'?'wx':'article'):undefined,people:x.people,
             promptMode:x.promptMode,direction:x.direction,refs:{layout:x.layout,pose:x.pose,face:x.face,clothes:x.clothes}}))};
         if(signal.aborted)return;
@@ -1060,12 +1060,13 @@ window.__ModuleLoader__.load({
         project.concept&&h('p',{className:'concept'},project.concept),
         project.visual.style&&h('div',{className:'box stack',style:{gap:8}},
           h('div',{className:'line spread'},
-            h('strong',null,'AI 视觉规划 · 已选画风'),
+            h('strong',null,project.visual.styleSource==='fallback'?'视觉规划 · 系统辅助选定画风':'AI 视觉规划 · 已选画风'),
             Button('更换画风',()=>openPicker('style',true),{disabled:!!busy})),
           h('div',{className:'line'},
             visual('style')&&h('img',{src:thumb('style',visual('style')),alt:'已选画风预览',style:{width:66,height:66,objectFit:'cover',borderRadius:8}}),
             h('div',{className:'stack',style:{gap:3}},
               h('strong',null,visual('style')?.name||project.visual.style),
+              project.visual.styleSource==='fallback'&&h('small',null,'AI 未返回可识别画风，系统已根据主题从素材库推荐，可点更换画风调整。'),
               h('small',null,'主题色：'+(lists.color?.find(x=>x.id===project.visual.color)?.name||'自动')+' · 当前页版式：'+(visual('layout')?.name||'自由构图')),
               h('small',null,'当前页影调：'+(lists.tones?.find(x=>x.id===page.direction?.tone)?.name_zh||'自动')+' · 留白：'+({auto:'自动',moderate:'较多',high:'大量'}[page.direction?.whitespace]||'自动'))))),
         h('div',{className:'box output-toolbar',role:'group','aria-label':'生成输出设置'},
