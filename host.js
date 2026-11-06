@@ -421,7 +421,7 @@ async function gatewayPlan(settings, prompt, signal) {
   return { text:(await response.json()).choices?.[0]?.message?.content, truncated:false };
 }
 
-async function createPlan(body, settings, list, signal, host) {
+export async function createPlan(body, settings, list, signal, host) {
   const theme = typeof body.theme === 'string' ? body.theme.trim() : '';
   if (!theme || theme.length > 1000) throw fail(400, '请输入 1–1000 字的创作主题。');
   const count = Number(body.count);
@@ -470,7 +470,7 @@ async function createPlan(body, settings, list, signal, host) {
       ...(clean(item?.direction?.audience,120)?{audience:clean(item.direction.audience,120)}:{}),
       ...(clean(item?.direction?.scenario,120)?{scenario:clean(item.direction.scenario,120)}:{}),
       whitespace:['auto','moderate','high'].includes(item?.direction?.whitespace)?item.direction.whitespace:'auto',
-      ...(/^\\d{1,3}(?::|：)\\d{1,3}$/.test(item?.direction?.ratio||'')?{ratio:item.direction.ratio}:{}),
+      ...(/^\d{1,3}(?::|：)\d{1,3}$/.test(item?.direction?.ratio||'')?{ratio:item.direction.ratio}:{}),
     },
     ...Object.fromEntries(Object.entries(references).map(([kind,rows])=>[kind,item?.people===true&&rows.some(x=>x.id===item[kind])?item[kind]:undefined])),
   }));
