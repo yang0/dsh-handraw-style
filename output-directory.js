@@ -25,12 +25,13 @@ export async function outputDirectory(value) {
 }
 
 /** Write each generated original once, without exposing partially written PNGs. */
-export async function saveGeneratedImage(directory, bytes, page) {
+export async function saveGeneratedImage(directory, bytes, page, format = 'png') {
+  if (!['png', 'gif'].includes(format)) throw invalidDirectory('不支持的图片保存格式。');
   const target = await outputDirectory(directory);
   if (!target) return undefined;
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const number = Number.isInteger(page) && page >= 1 && page <= 12 ? '-p' + String(page).padStart(2, '0') : '';
-  const filename = 'pose-studio-' + stamp + number + '-' + randomUUID() + '.png';
+  const filename = 'pose-studio-' + stamp + number + '-' + randomUUID() + '.' + format;
   const destination = join(target, filename);
   const temporary = join(target, '.' + filename + '.tmp');
   let created = false;
