@@ -31,9 +31,10 @@ export async function compilePrompt({ design, refs, model, list, size }) {
   const mode=layout ? (ecommerce?'ecommerce':'graphic-text') : design.mode==='graphic-text'?'graphic-text':'pure-image';
   const variant=Number.isInteger(design.variant)&&design.variant>=1&&design.variant<=7?design.variant:1;
   const styleParts=[];
+  const baseModel=String(model??'').split('/').pop().split(/[:@]/)[0];
   for (const [kind,entry] of [['style',style],['style2',scene]]) {
     if (!allowedStyle||!entry) { delete selected[kind]; continue; }
-    const policy=capabilities.models[model], calibrated=policy?.styles?.[entry.id];
+    const policy=capabilities.models[model]||capabilities.models[baseModel], calibrated=policy?.styles?.[entry.id];
     const named=calibrated?.name_activation==='strong';
     if (named||(policy?.traits_activation==='strong'&&entry.prompt))delete selected[kind];
     styleParts.push({kind,entry,traits:!named?entry.prompt:''});

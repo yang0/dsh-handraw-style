@@ -57,27 +57,81 @@ async function upstreamFailure(result) {
   return { message: message.trim().replace(/\s+/g, ' ').slice(0, 300), code };
 }
 
-async function config() {
-  try { return { ...defaults, ...JSON.parse(await readFile(configFile, 'utf8')) }; }
+const defaultStore = { dir: dataDir, file: configFile };
+const modelSegmentPattern = /^[a-zA-Z0-9._:-]+$/;
+const imageModelNamePattern = /^(?:gpt-image(?:$|-)|chatgpt-image(?:$|-)|gpt-4o-image(?:$|-)|gpt-5-image(?:$|-)|dall-?e-|imagen(?:$|[-\d.])|flux(?:$|[-\d._])|stable-diffusion(?:$|[-\d._])|sdxl(?:$|[-\d._])|sd-?3(?:$|[-\d._])|seedream(?:$|[-\d._])|doubao-seedream(?:$|[-\d._])|jimeng(?:$|[-\d._])|cogview(?:$|[-\d._])|glm-image(?:$|[-\d._])|wan(?:x|\d)(?:$|[-\d._])|qwen-image(?:$|[-\d._])|kolors(?:$|[-\d._])|hunyuan-image(?:$|[-\d._])|kling-.*image|ideogram(?:$|[-\d._])|recraft(?:$|[-\d._])|midjourney(?:$|[-\d._])|mj-(?:$|[a-z0-9._-])|grok-(?:2-image|imagine)(?:$|[-\d._])|nano-banana(?:$|[-\d._])|gemini-.*-image(?:$|-))|(?:^|[-_])(?:t2i|text-to-image|image-gen(?:eration)?)(?:$|[-_])/;
+const nonImageNamePattern = /(?:^|[-_.])(?:embed(?:ding)?|rerank|whisper|tts|audio|speech|transcribe|moderation|realtime|guard|shield|encoder|ocr|vision|vl)(?:$|[-_.])/i;
+
+export function isValidModelId(id) {
+  if (typeof id !== 'string' || !id || id.length > 200) return false;
+  return id.split('/').every(seg => seg.length > 0 && seg !== '.' && seg !== '..' && modelSegmentPattern.test(seg));
+}
+
+function baseModelName(id) {
+  return String(id ?? '').split('/').pop().split(/[:@]/)[0].toLowerCase();
+}
+
+function validateKey(key) {
+  if (!key) return;
+  try { new Headers({ Authorization: 'Bearer ' + key }); }
+  catch { throw fail(400, 'API Key 包含无法写入请求头的字符（如换行或非 Latin-1 字符）。'); }
+}
+
+function isImageModel(entry) {
+  if (!entry || typeof entry !== 'object' || !isValidModelId(entry.id)) return false;
+
+  const outputLists = [
+    entry.modalities?.output,
+    entry.output_modalities,
+    entry.architecture?.output_modalities,
+  ].filter(list => Array.isArray(list) && list.length > 0);
+  if (outputLists.length > 0) {
+    return outputLists.some(list => list.some(m => typeof m === 'string' && m.toLowerCase() === 'image'));
+  }
+
+  if (typeof entry.architecture?.modality === 'string' && entry.architecture.modality.includes('->')) {
+    const outputSide = entry.architecture.modality.split('->').slice(1).join('->').toLowerCase();
+    return outputSide.includes('image');
+  }
+
+  const endpoints = [
+    ...(Array.isArray(entry.supported_endpoints) ? entry.supported_endpoints : []),
+    ...(Array.isArray(entry.endpoints) ? entry.endpoints : []),
+  ];
+  if (endpoints.some(ep => typeof ep === 'string' && /\/images\/(?:generations|edits)\b/i.test(ep))) {
+    return true;
+  }
+
+  const type = String(entry.type || entry.model_type || '').toLowerCase();
+  if (type === 'image' || type === 'image-generation' || type === 'images') return true;
+  if (entry.capabilities?.image_generation === true || entry.capabilities?.images === true) return true;
+
+  const base = baseModelName(entry.id);
+  if (nonImageNamePattern.test(base)) return false;
+  return imageModelNamePattern.test(base);
+}
+
+async function config(store = defaultStore) {
+  try { return { ...defaults, ...JSON.parse(await readFile(store.file, 'utf8')) }; }
   catch (error) { if (error.code !== 'ENOENT') throw error; return { ...defaults, key: '' }; }
 }
 
-async function saveConfig(body) {
-  const current = await config();
+export async function saveConfig(body, store = defaultStore) {
+  const current = await config(store);
   const model = String(body.model ?? '').trim();
-  if (!/^gpt-image-[a-z0-9.-]{1,70}$/.test(model)) throw fail(400, '请输入 GPT Image 模型 ID。');
+  if (!isValidModelId(model)) throw fail(400, '请输入有效的生图模型 ID。');
   const key = body.clear ? '' : String(body.key || '').trim() || current.key;
-  if (key && !/^[!-~]{8,512}$/.test(key)) throw fail(400, 'API Key 格式无效。');
+  validateKey(key);
   const baseUrl = body.baseUrl === undefined ? current.baseUrl : String(body.baseUrl ?? '').trim();
   const endpoint = gateway({baseUrl}).href;
   if (new URL(endpoint).origin !== gateway(current).origin && !String(body.key || '').trim() && (key || process.env.OPENAI_API_KEY)) {
     throw fail(400, '更换接口地址时，请填写该中转站的 API Key。');
   }
   const directory=body.outputDirectory===undefined?current.outputDirectory||'':await outputDirectory(body.outputDirectory);
-  await mkdir(dataDir, { recursive: true, mode: 0o700 });
-  const temporary = join(dataDir, randomUUID() + '.tmp');
+  await mkdir(store.dir, { recursive: true, mode: 0o700 });
+  const temporary = join(store.dir, randomUUID() + '.tmp');
   await writeFile(temporary, JSON.stringify({ model, key, baseUrl: baseUrl ? endpoint : undefined, outputDirectory:directory }), { mode: 0o600, flag: 'wx' });
-  await rename(temporary, configFile);
+  await rename(temporary, store.file);
   return { model, configured: Boolean(key || process.env.OPENAI_API_KEY), endpoint, outputDirectory:directory };
 }
 
@@ -88,35 +142,37 @@ function gateway(settings = {}) {
   catch { throw fail(400, '请输入完整的 Base URL，例如 http://127.0.0.1:38650/v1。'); }
   const localHttp = url.protocol === 'http:' && ['127.0.0.1','localhost','[::1]'].includes(url.hostname);
   if ((!localHttp && url.protocol !== 'https:') || url.username || url.password || url.search || url.hash ||
-      /\/(?:chat\/completions|images\/(?:edits|generations))\/$/.test(url.pathname)) {
+      /\/(?:models|chat\/completions|images\/(?:edits|generations))\/$/.test(url.pathname)) {
     throw fail(400, '请输入 API 根地址。远程地址使用 HTTPS，本机回环地址可用 HTTP。');
   }
   return url;
 }
 
 /** Fetch the image model catalog using the current gateway, never exposing API keys to the browser. */
-export async function imageModels(body = {}, stored, signal) {
-  const baseUrl = typeof body.baseUrl === 'string' ? body.baseUrl.trim() : '';
+export async function imageModels(body = {}, stored = {}, signal) {
+  const hasBaseUrl = typeof body.baseUrl === 'string';
+  const baseUrl = hasBaseUrl ? body.baseUrl.trim() : '';
   if (baseUrl.length > 2048) throw fail(400, 'Base URL 过长。');
-  const selected = gateway({ baseUrl: baseUrl || stored.baseUrl });
+  const selected = gateway({ baseUrl: hasBaseUrl ? baseUrl : stored.baseUrl });
   const previous = gateway(stored);
   const enteredKey = typeof body.key === 'string' ? body.key.trim() : '';
-  if (enteredKey && !/^[!-~]{8,512}$/.test(enteredKey)) throw fail(400, 'API Key 格式无效。');
+  validateKey(enteredKey);
   // Never send an existing credential to a different endpoint until the user explicitly provides its key.
   if (selected.origin !== previous.origin && !enteredKey) {
     throw fail(400, '更换接口地址后，请先填写新接口的 API Key，再刷新模型。');
   }
   const key = enteredKey || stored.key || process.env.OPENAI_API_KEY;
+  validateKey(key);
   if (!key) throw fail(400, '请先填写 API Key，再刷新模型列表。');
   let response;
   try {
     response = await fetch(new URL('models', selected), {
       headers: { Authorization: 'Bearer ' + key },
       redirect: 'error',
-      signal: AbortSignal.any([signal, AbortSignal.timeout(15000)]),
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(15000)]) : AbortSignal.timeout(15000),
     });
   } catch (error) {
-    if (signal.aborted) throw error;
+    if (signal?.aborted) throw error;
     throw fail(502, error.name === 'TimeoutError' ? '拉取模型超时，请检查接口地址。' : '无法连接模型接口，请检查 Base URL 与网络。');
   }
   if (!response.ok) {
@@ -128,9 +184,24 @@ export async function imageModels(body = {}, stored, signal) {
   }
   let catalog;
   try { catalog = await response.json(); } catch { throw fail(502, '模型接口没有返回有效 JSON。'); }
-  if (!Array.isArray(catalog?.data)) throw fail(502, '模型接口未返回 data 模型列表。');
-  const models = [...new Set(catalog.data.map(entry => entry?.id).filter(id =>
-    typeof id === 'string' && /^gpt-image-[a-z0-9.-]{1,70}$/.test(id)))].sort((a,b) => a.localeCompare(b, undefined, { numeric:true }));
+  const entries = Array.isArray(catalog)
+    ? catalog
+    : Array.isArray(catalog?.data)
+      ? catalog.data
+      : Array.isArray(catalog?.models)
+        ? catalog.models
+        : null;
+  if (!entries) throw fail(502, '模型接口未返回模型列表。');
+  const models = [...new Set(
+    entries
+      .map(entry => (typeof entry === 'string'
+        ? { id: entry.trim() }
+        : entry && typeof entry === 'object'
+          ? { ...entry, id: typeof entry.id === 'string' ? entry.id.trim() : entry.id }
+          : null))
+      .filter(isImageModel)
+      .map(entry => entry.id),
+  )].sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
   return { models };
 }
 
@@ -188,23 +259,92 @@ function uploadImage(value) {
   return new Blob([bytes], { type: match[1] });
 }
 
+const gifModels = new Set(['gpt-image-2.6', 'gpt-image-2.6-flare', 'gpt-image-2.6-sunburst']);
+const maxGeneratedImage = 32 * 1024 * 1024;
+
+function imageOptions(model, body) {
+  const base = baseModelName(model);
+  const requestedSize = ['1024x1024', '1024x1536', '1536x1024'].includes(body.size) ? body.size : defaults.size;
+  const requestedQuality = ['low', 'medium', 'high'].includes(body.quality) ? body.quality : defaults.quality;
+  if (base.startsWith('dall-e-2') || base.startsWith('dalle-2')) {
+    return { model, size: '1024x1024', response_format: 'b64_json' };
+  }
+  if (base.startsWith('dall-e-3') || base.startsWith('dalle-3')) {
+    return {
+      model,
+      size: requestedSize === '1024x1536' ? '1024x1792' : requestedSize === '1536x1024' ? '1792x1024' : '1024x1024',
+      quality: requestedQuality === 'high' ? 'hd' : 'standard',
+      response_format: 'b64_json',
+    };
+  }
+  if (/^(?:gpt-image|chatgpt-image|gpt-4o-image|gpt-5-image)/.test(base)) {
+    return { model, size: requestedSize, quality: requestedQuality };
+  }
+  return { model, size: requestedSize };
+}
+
+function sniffImageMime(bytes) {
+  if (bytes.length >= 6 && ['GIF87a', 'GIF89a'].includes(bytes.subarray(0, 6).toString('ascii'))) return 'image/gif';
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return 'image/jpeg';
+  if (bytes.length >= 12 && bytes.subarray(0, 4).toString('ascii') === 'RIFF' && bytes.subarray(8, 12).toString('ascii') === 'WEBP') return 'image/webp';
+  return 'image/png';
+}
+
+async function extractImageBytes(payloadOut, endpoint, signal) {
+  const item = payloadOut?.data?.[0];
+  if (typeof item?.b64_json === 'string' && item.b64_json.trim()) {
+    const cleaned = item.b64_json.trim().replace(/^data:image\/[a-zA-Z0-9.+-]+;base64,/i, '').replace(/\s+/g, '');
+    if (!/^[A-Za-z0-9+/=]+$/.test(cleaned)) throw fail(502, '接口返回的 b64_json 图片格式无效。');
+    const bytes = Buffer.from(cleaned, 'base64');
+    if (!bytes.length) throw fail(502, '生图接口返回了空图片数据。');
+    return bytes;
+  }
+  if (typeof item?.url === 'string' && item.url.trim()) {
+    const imageUrl = item.url.trim();
+    const dataMatch = /^data:image\/[a-zA-Z0-9.+-]+;base64,([A-Za-z0-9+/=\s]+)$/i.exec(imageUrl);
+    if (dataMatch) {
+      const bytes = Buffer.from(dataMatch[1].replace(/\s+/g, ''), 'base64');
+      if (!bytes.length) throw fail(502, '生图接口返回了空图片数据。');
+      return bytes;
+    }
+    let parsedUrl;
+    try { parsedUrl = new URL(imageUrl); } catch { throw fail(502, '接口返回的图片 URL 无效。'); }
+    if (parsedUrl.protocol !== 'https:' && !(parsedUrl.protocol === 'http:' && parsedUrl.origin === endpoint.origin)) {
+      throw fail(502, '接口返回的图片 URL 协议不受支持。');
+    }
+    let imageResponse;
+    try {
+      imageResponse = await fetch(parsedUrl, {
+        redirect: 'error',
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(60000)]) : AbortSignal.timeout(60000),
+      });
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      throw fail(502, '下载生成图片失败，请检查网络或图片链接。');
+    }
+    if (!imageResponse.ok) throw fail(502, `下载生成图片失败（HTTP ${imageResponse.status}）。`);
+    if (Number(imageResponse.headers.get('content-length')) > maxGeneratedImage) throw fail(502, '生成的图片超过大小限制。');
+    const bytes = Buffer.from(await imageResponse.arrayBuffer());
+    if (!bytes.length || bytes.length > maxGeneratedImage) throw fail(502, '生成的图片大小无效。');
+    return bytes;
+  }
+  throw fail(502, '生图接口未返回有效的图片数据（b64_json 或 url）。');
+}
+
 export async function generate(body, settings, list, signal) {
   const key = settings.key || process.env.OPENAI_API_KEY;
-  if (!key) throw fail(400, '请先在接口设置中保存 OpenAI API Key。');
+  if (!key) throw fail(400, '请先在接口设置中保存 API Key。');
+  validateKey(key);
   if (typeof body.prompt !== 'string' || !body.prompt.trim() || body.prompt.length > 8000) throw fail(400, '请输入 1–8000 字的画面描述。');
   const isGif = body.outputFormat === 'gif';
   if (body.outputFormat !== undefined && !['png', 'gif'].includes(body.outputFormat)) throw fail(400, '输出格式无效。');
   if (isGif) {
-    if (!['gpt-image-2.6', 'gpt-image-2.6-flare', 'gpt-image-2.6-sunburst'].includes(settings.model)) throw fail(400, 'GIF 需要 gpt-image-2.6 系列模型，请在接口设置中切换。');
+    if (!gifModels.has(baseModelName(settings.model))) throw fail(400, 'GIF 需要 gpt-image-2.6 系列模型，请在接口设置中切换。');
     if (!Number.isInteger(body.frameCount) || body.frameCount < 2 || body.frameCount > 16) throw fail(400, 'GIF 帧数须为 2–16。');
     if (!Number.isInteger(body.frameDurationMs) || body.frameDurationMs < 20 || body.frameDurationMs > 2000 || body.frameDurationMs % 10) throw fail(400, 'GIF 每帧时长须为 20–2000 毫秒，按 10 毫秒递增。');
   }
   const inputRefs = body.refs ?? {};
-  const options = {
-    model: settings.model,
-    size: ['1024x1024', '1024x1536', '1536x1024'].includes(body.size) ? body.size : defaults.size,
-    quality: ['low', 'medium', 'high'].includes(body.quality) ? body.quality : defaults.quality,
-  };
+  const options = imageOptions(settings.model, body);
   const compiled = body.design ? await compilePrompt({design:body.design,refs:inputRefs,model:settings.model,list,size:options.size}) : null;
   const refs = compiled?.refs ?? inputRefs;
   if (isGif && (refs.upload || refs.anchor || inputRefs.attachments?.length)) {
@@ -259,9 +399,10 @@ export async function generate(body, settings, list, signal) {
     headers['Content-Type'] = 'application/json';
     payload = JSON.stringify({ ...options, prompt, ...(isGif ? { output_format:'gif', frame_count:body.frameCount, frame_duration_ms:body.frameDurationMs } : {}) });
   }
-  const result = await fetch(new URL(files.length ? 'images/edits' : 'images/generations', gateway(settings)), {
+  const endpoint = gateway(settings);
+  const result = await fetch(new URL(files.length ? 'images/edits' : 'images/generations', endpoint), {
     method: 'POST', headers, body: payload, redirect: 'error',
-    signal: AbortSignal.any([signal, AbortSignal.timeout(300000)]),
+    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(300000)]) : AbortSignal.timeout(300000),
   });
   if (!result.ok) {
     const failure = await upstreamFailure(result);
@@ -271,17 +412,15 @@ export async function generate(body, settings, list, signal) {
     }
     const explanations = { 400: '检查模型、尺寸、图片格式或描述。', 401: '检查 API Key。', 403: '检查项目或组织的模型权限。', 404: '检查模型 ID 和接口地址。', 429: '检查配额或稍后重试。' };
     throw fail(502, failure.message
-      ? `GPT Image 返回 HTTP ${result.status}：${failure.message}`
-      : `GPT Image 返回 HTTP ${result.status}。${explanations[result.status] || '请稍后重试。'}`);
+      ? `生图接口返回 HTTP ${result.status}：${failure.message}`
+      : `生图接口返回 HTTP ${result.status}。${explanations[result.status] || '请稍后重试。'}`);
   }
-  const { data } = await result.json();
-  const encoded = data?.[0]?.b64_json;
-  if (typeof encoded !== 'string' || !/^[A-Za-z0-9+/=]+$/.test(encoded)) throw fail(502, '接口未返回 GPT Image 的 b64_json 图片。');
-  const bytes=Buffer.from(encoded, 'base64');
-  const actualGif = bytes.length >= 6 && ['GIF87a', 'GIF89a'].includes(bytes.subarray(0, 6).toString('ascii'));
+  const bytes = await extractImageBytes(await result.json(), endpoint, signal);
+  const mimeType = sniffImageMime(bytes);
+  const actualGif = mimeType === 'image/gif';
   if (isGif && !actualGif) throw fail(502, '号池没有返回原生 GIF 动画，请确认账号和模型支持 GIF。');
   if (!isGif && actualGif) throw fail(502, '接口返回了意外的 GIF，请调整输出格式后重试。');
-  const headersOut={ 'Content-Type':actualGif ? 'image/gif' : 'image/png', 'Cache-Control':'no-store' };
+  const headersOut={ 'Content-Type':mimeType, 'Cache-Control':'no-store' };
   if(settings.outputDirectory){
     try {
       const path=await saveGeneratedImage(settings.outputDirectory,bytes,body.page,actualGif ? 'gif' : 'png');
@@ -528,12 +667,12 @@ export function apply(ctx) {
     }));
   }
   route('settings', ['GET', 'POST'], async request => {
-    if (request.method === 'POST') return json(await saveConfig(await readJson(request, 4096)));
+    if (request.method === 'POST') return json(await saveConfig(await readJson(request, 16384)));
     const settings = await config();
     return json({ model:settings.model, configured:Boolean(settings.key || process.env.OPENAI_API_KEY), endpoint:gateway(settings).href, outputDirectory:settings.outputDirectory||'' });
   });
   route('image-models', ['POST'], async (request, _, signal) =>
-    json(await imageModels(await readJson(request, 4096), await config(), signal)));
+    json(await imageModels(await readJson(request, 16384), await config(), signal)));
   route('output-directory-picker', ['POST'], async (request, _, signal) => {
     const body=await readJson(request,8192);
     const picker=typeof ctx.get==='function'?ctx.get('directoryPicker'):ctx.reflect?.get('directoryPicker');

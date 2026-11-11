@@ -395,27 +395,46 @@ window.__ModuleLoader__.load({
       const [key,setKey]=useState('');
       const [revealed,setRevealed]=useState(false);
       const [baseUrl,setBaseUrl]=useState(null);
+      const [draftModel,setDraftModel]=useState(null);
+      const [manualModel,setManualModel]=useState(false);
       const [modelChoices,setModelChoices]=useState([]);
-      const [modelStatus,setModelStatus]=useState('');
+      const [modelStatus,setModelStatus]=useState({text:'',error:false});
       const [modelsLoading,setModelsLoading]=useState(false);
       const modelRequest=useRef(null);
+      const activeModel=draftModel??settings?.model??'';
+      const normalizeBase=value=>String(value||'').trim().replace(/\/+$/,'');
       async function refreshImageModels(endpoint=baseUrl??settings?.endpoint,enteredKey=key){
         modelRequest.current?.abort();
         const controller=new AbortController();
         modelRequest.current=controller;
-        setModelsLoading(true);setModelStatus('');
+        setModelsLoading(true);setModelStatus({text:'',error:false});
         try {
           const result=await (await request('image-models',{baseUrl:endpoint,key:enteredKey},controller.signal)).json();
           if(controller.signal.aborted)return;
           setModelChoices(result.models);
-          if(!result.models.length)setModelStatus('接口没有公布 GPT Image 生图模型，请检查号池是否正常运行。');
-          else if(!result.models.includes(settings?.model))setModelStatus('当前已保存的模型不在接口列表中，请从下拉框选择一个可用模型。');
+          const current=draftModel??settings?.model??'';
+          const endpointChanged=baseUrl!==null&&normalizeBase(baseUrl)!==normalizeBase(settings?.endpoint);
+          if(!result.models.length){
+            setModelStatus({text:'接口没有返回可识别的生图模型，请检查接口设置或点「手动输入」填写模型 ID。',error:true});
+          }else if(!result.models.includes(current)){
+            if(!settings?.configured||endpointChanged){
+              const base=String(current).split('/').pop().split(/[:@]/)[0];
+              const sameBase=result.models.filter(m=>m.split('/').pop().split(/[:@]/)[0]===base);
+              const matched=sameBase.find(m=>!m.includes('/'))||sameBase[0]||result.models.find(m=>/(?:^|\/)gpt-image-2\.6$/.test(m))||result.models.find(m=>/(?:^|\/)gpt-image-/.test(m))||result.models[0];
+              setDraftModel(matched);
+              setModelStatus({text:`已自动匹配可用模型：${matched}（共 ${result.models.length} 个）。`,error:false});
+            }else{
+              setModelStatus({text:'当前已保存的模型不在接口列表中，请从下拉框选择一个可用模型。',error:false});
+            }
+          }else{
+            setModelStatus({text:`已获取 ${result.models.length} 个可用生图模型。`,error:false});
+          }
         } catch(error){
           if(!controller.signal.aborted){
             setModelChoices([]);
             // 插件接口没注册时 DSH 只回一个裸 404，提示去重启宿主，别让用户以为是号池坏了。
             const missing=error.message==='DSH 请求失败（404）';
-            setModelStatus(missing?'接口未注册（404）：当前 DSH 宿主还没有加载新版插件，重启 DSH 后再刷新模型。':error.message);
+            setModelStatus({text:missing?'接口未注册（404）：当前 DSH 宿主还没有加载新版插件，重启 DSH 后再刷新模型。':error.message,error:true});
           }
         } finally {
           if(modelRequest.current===controller){modelRequest.current=null;setModelsLoading(false);}
@@ -423,9 +442,14 @@ window.__ModuleLoader__.load({
       }
       useEffect(()=>{
         if(!openSettings||!settings)return;
+        if(!settings.configured){
+          setModelChoices([]);
+          setModelStatus({text:'填写 Base URL 和 API Key 后，点击「刷新模型」获取可用模型。',error:false});
+          return;
+        }
         refreshImageModels(settings.endpoint,'');
         return()=>modelRequest.current?.abort();
-      },[openSettings,settings?.endpoint]);
+      },[openSettings,settings?.endpoint,settings?.configured]);
       const [outputPath,setOutputPath]=useState(null);
       const [directoryListing,setDirectoryListing]=useState(null);
       const [folderName,setFolderName]=useState('');
@@ -442,7 +466,7 @@ window.__ModuleLoader__.load({
         });
       }
       function closeSettings(){
-        setOpenSettings(false);setKey('');setRevealed(false);setBaseUrl(null);setOutputPath(null);setDirectoryListing(null);setFolderName('');
+        setOpenSettings(false);setKey('');setRevealed(false);setBaseUrl(null);setDraftModel(null);setManualModel(false);setModelChoices([]);setModelStatus({text:'',error:false});setOutputPath(null);setDirectoryListing(null);setFolderName('');
       }
       function toggleKey(){
         if(revealed){setRevealed(false);return;}
@@ -871,19 +895,24 @@ window.__ModuleLoader__.load({
       const renderSettings=()=>h('section',{className:'shell box stack settings-panel'},
         h('div',{className:'line spread'},h('h2',null,'设置'),Button('关闭',closeSettings,{disabled:!!busy})),
         h('small',null,'生成方案使用 DSH 宿主的默认模型，无需在此填写；这里的接口只用于生图和参考图编辑。'),
-        h('label',{className:'field'},'Base URL',h('input',{value:baseUrl??settings?.endpoint??'',placeholder:'http://127.0.0.1:38650/v1',onChange:e=>{modelRequest.current?.abort();setBaseUrl(e.target.value);setModelChoices([]);setModelStatus('地址已更改，请刷新模型列表。');}})),
+        h('label',{className:'field'},'Base URL',h('input',{value:baseUrl??settings?.endpoint??'',placeholder:'http://127.0.0.1:端口/v1 或 https://中转站/v1',onChange:e=>{modelRequest.current?.abort();setBaseUrl(e.target.value);setModelChoices([]);setModelStatus({text:'地址已更改，请刷新模型列表。',error:false});}})),
         h('small',null,'本机可用 HTTP，远程中转站请用 HTTPS。'),
         h('div',{className:'field'},
           h('div',{className:'line spread'},h('strong',null,'生图模型'),
-            Button(modelsLoading?'正在拉取…':'刷新模型',()=>refreshImageModels(),{disabled:modelsLoading||!!busy})),
-          h('select',{'aria-label':'选择生图模型',value:settings?.model||'',disabled:modelsLoading||!!busy,
-            onChange:e=>setSettings({...settings,model:e.target.value})},
-            [...new Set([settings?.model,...modelChoices].filter(Boolean))].map(model=>
-              h('option',{key:model,value:model},model+(modelChoices.length&&!modelChoices.includes(model)?'（原配置）':'')))),
-          modelStatus&&h('small',{className:modelChoices.length?'muted':'error',role:'status'},modelStatus),
-          !modelStatus&&h('small',null,'只展示接口 /v1/models 返回的 GPT Image 生图模型。')),
+            h('div',{className:'line'},
+              Button(manualModel?'列表选择':'手动输入',()=>setManualModel(v=>!v),{disabled:!!busy}),
+              Button(modelsLoading?'正在拉取…':'刷新模型',()=>refreshImageModels(),{disabled:modelsLoading||!!busy}))),
+          manualModel
+            ? h('input',{'aria-label':'输入生图模型 ID',value:activeModel,placeholder:'例如 gpt-image-2.6 或 provider/model',disabled:!!busy,
+                onChange:e=>setDraftModel(e.target.value)})
+            : h('select',{'aria-label':'选择生图模型',value:activeModel,disabled:modelsLoading||!!busy,
+                onChange:e=>setDraftModel(e.target.value)},
+                [...new Set([activeModel,...modelChoices].filter(Boolean))].map(model=>
+                  h('option',{key:model,value:model},model+(modelChoices.length&&!modelChoices.includes(model)?'（原配置）':'')))),
+          modelStatus.text&&h('small',{className:modelStatus.error?'error':'muted',role:'status'},modelStatus.text),
+          !modelStatus.text&&h('small',null,'自动筛选接口 /v1/models 返回的生图模型；未列出时可点「手动输入」。')),
 
-        h('label',{className:'field'},'API Key',h('input',{value:key,type:revealed?'text':'password',autoComplete:'off',spellCheck:false,placeholder:settings?.configured?'留空保留现有 Key':'输入 API Key',onChange:e=>{setKey(e.target.value);modelRequest.current?.abort();setModelChoices([]);setModelStatus('API Key 已更改，请刷新模型列表。');}})),
+        h('label',{className:'field'},'API Key',h('input',{value:key,type:revealed?'text':'password',autoComplete:'off',spellCheck:false,placeholder:settings?.configured?'留空保留现有 Key':'输入 API Key',onChange:e=>{setKey(e.target.value);modelRequest.current?.abort();setModelChoices([]);setModelStatus({text:'API Key 已更改，请刷新模型列表。',error:false});}})),
         h('div',{className:'field'},h('strong',null,'生成图片保存目录'),
           h('div',{className:'line'},Button('选择文件夹…',()=>chooseOutputDirectory(),{disabled:!!busy}),
             (outputPath??settings?.outputDirectory)&&Button('关闭自动保存',()=>setOutputPath(''),{disabled:!!busy})),
@@ -901,7 +930,7 @@ window.__ModuleLoader__.load({
             Button('新建文件夹',()=>chooseOutputDirectory('create',directoryListing.path,folderName),{disabled:!!busy||!folderName.trim()})),
           Button('使用此文件夹',()=>{setOutputPath(directoryListing.path);setDirectoryListing(null);},{className:'primary',disabled:!!busy})),
         h('div',{className:'line'},Button(revealed?'隐藏密钥':'查看明文',toggleKey,{disabled:!!busy,'aria-pressed':revealed}),
-          Button('保存设置',()=>action('保存设置',async signal=>{const result=await(await request('settings',{key,model:settings.model,baseUrl:baseUrl??undefined,outputDirectory:outputPath??undefined},signal)).json();setSettings(result);closeSettings();}),{className:'primary',disabled:!settings||!!busy||!!directoryListing})));
+          Button('保存设置',()=>action('保存设置',async signal=>{const result=await(await request('settings',{key,model:activeModel,baseUrl:baseUrl??undefined,outputDirectory:outputPath??undefined},signal)).json();setSettings(result);closeSettings();}),{className:'primary',disabled:!settings||!!busy||!!directoryListing})));
       const presets={
         '':['自动判断',0,'一句话描述你想做的内容'],single:['单张插画',1,'例如：画一张窗台晒太阳的猫'],
         carousel:['社媒套图',6,'例如：做一套小红书雨天街拍姿势指南'],poster:['封面海报',1,'例如：给咖啡店开业做一张竖版海报'],
