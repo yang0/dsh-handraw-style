@@ -59,8 +59,8 @@ async function upstreamFailure(result) {
 
 const defaultStore = { dir: dataDir, file: configFile };
 const modelSegmentPattern = /^[a-zA-Z0-9._:-]+$/;
-const imageModelNamePattern = /^(?:gpt-image(?:$|-)|chatgpt-image(?:$|-)|gpt-4o-image(?:$|-)|gpt-5-image(?:$|-)|dall-?e-|imagen(?:$|[-\d.])|flux(?:$|[-\d._])|stable-diffusion(?:$|[-\d._])|sdxl(?:$|[-\d._])|sd-?3(?:$|[-\d._])|seedream(?:$|[-\d._])|doubao-seedream(?:$|[-\d._])|jimeng(?:$|[-\d._])|cogview(?:$|[-\d._])|glm-image(?:$|[-\d._])|wan(?:x|\d)(?:$|[-\d._])|qwen-image(?:$|[-\d._])|kolors(?:$|[-\d._])|hunyuan-image(?:$|[-\d._])|kling-.*image|ideogram(?:$|[-\d._])|recraft(?:$|[-\d._])|midjourney(?:$|[-\d._])|mj-(?:$|[a-z0-9._-])|grok-(?:2-image|imagine)(?:$|[-\d._])|nano-banana(?:$|[-\d._])|gemini-.*-image(?:$|-))|(?:^|[-_])(?:t2i|text-to-image|image-gen(?:eration)?)(?:$|[-_])/;
-const nonImageNamePattern = /(?:^|[-_.])(?:embed(?:ding)?|rerank|whisper|tts|audio|speech|transcribe|moderation|realtime|guard|shield|encoder|ocr|vision|vl)(?:$|[-_.])/i;
+const imageModelNamePattern = /^(?:gpt-image(?:$|-)|chatgpt-image(?:$|-)|gpt-4o-image(?:$|-)|gpt-5-image(?:$|-)|dall-?e-|imagen(?:$|[-\d.])|flux(?:$|[-\d._])|stable-diffusion(?:$|[-\d._])|sdxl(?:$|[-\d._])|sd-?3(?:$|[-\d._])|seedream(?:$|[-\d._])|doubao-seedream(?:$|[-\d._])|jimeng(?:$|[-\d._])|cogview(?:$|[-\d._])|glm-image(?:$|[-\d._])|wan(?:x|\d)(?:$|[-\d._])|qwen-image(?:$|[-\d._])|kolors(?:$|[-\d._])|hunyuan-image(?:$|[-\d._])|kling-.*image|ideogram(?:$|[-\d._])|recraft(?:$|[-\d._])|midjourney(?:$|[-\d._])|mj-(?:$|[a-z0-9._-])|grok-(?:2-image|image|imagine)(?:$|[-\d._])|nano-banana(?:$|[-\d._])|gemini-.*-image(?:$|-))|(?:^|[-_])(?:t2i|text-to-image|image-gen(?:eration)?)(?:$|[-_])/;
+const nonImageNamePattern = /(?:^|[-_.])(?:embed(?:ding)?|rerank|whisper|tts|stt|voice|asr|audio|speech|transcribe|video|music|moderation|realtime|guard|shield|encoder|ocr|vision|vl)(?:$|[-_.])/i;
 
 export function isValidModelId(id) {
   if (typeof id !== 'string' || !id || id.length > 200) return false;
@@ -86,12 +86,16 @@ function isImageModel(entry) {
     entry.architecture?.output_modalities,
   ].filter(list => Array.isArray(list) && list.length > 0);
   if (outputLists.length > 0) {
-    return outputLists.some(list => list.some(m => typeof m === 'string' && m.toLowerCase() === 'image'));
+    const normalized = outputLists.flat().filter(m => typeof m === 'string').map(m => m.toLowerCase());
+    if (normalized.includes('image')) return true;
+    // Many relays mark chat-wrapped image models (e.g. grok-imagine-image) with output:["text"]; only reject other non-image media here.
+    if (normalized.some(m => m !== 'text')) return false;
   }
 
   if (typeof entry.architecture?.modality === 'string' && entry.architecture.modality.includes('->')) {
     const outputSide = entry.architecture.modality.split('->').slice(1).join('->').toLowerCase();
-    return outputSide.includes('image');
+    if (outputSide.includes('image')) return true;
+    if (outputSide.split(/[,+&\s/]+/).some(m => m && m !== 'text')) return false;
   }
 
   const endpoints = [

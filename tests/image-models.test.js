@@ -115,6 +115,39 @@ test('discovers provider-prefixed and modality-tagged image models with short or
   } finally { globalThis.fetch = previous; }
 });
 
+test('discovers non-GPT image models even when relays report output:["text"], while excluding video/voice/chat', async () => {
+  const previous = globalThis.fetch;
+  globalThis.fetch = async () => Response.json({
+    data: [
+      { id: 'sub2api/grok-imagine-image', modalities: { input: ['text', 'image'], output: ['text'] }, native_endpoints: ['/v1/chat/completions'] },
+      { id: 'sub2api/grok-imagine-image-2.0', modalities: { input: ['text', 'image'], output: ['text'] }, native_endpoints: ['/v1/chat/completions'] },
+      { id: 'sub2api/grok-imagine-image-lite', modalities: { output: ['text'] }, native_endpoints: ['/v1/chat/completions'] },
+      { id: 'sub2api/grok-imagine-image-edit', modalities: { output: ['text'] }, native_endpoints: ['/v1/chat/completions'] },
+      { id: 'sub2api/grok-imagine-video', modalities: { input: ['text', 'image'], output: ['text'] }, native_endpoints: ['/v1/chat/completions'] },
+      { id: 'sub2api/grok-imagine-video-1.5', modalities: { output: ['text'] }, native_endpoints: ['/v1/chat/completions'] },
+      { id: 'sub2api/grok-stt', modalities: { output: ['text'] } },
+      { id: 'sub2api/grok-voice-latest', modalities: { output: ['text'] } },
+      { id: 'sub2api/grok-chat-fast', modalities: { output: ['text'] } },
+      { id: 'grok/grok-4.7', modalities: { output: ['text'] } },
+      { id: 'relay/flux-1.1-pro', modalities: { output: ['text'] } },
+    ],
+  });
+  try {
+    const result = await imageModels(
+      { baseUrl: 'http://127.0.0.1:3425/v1', key: 'magpie' },
+      {},
+      new AbortController().signal,
+    );
+    assert.deepEqual(result.models, [
+      'relay/flux-1.1-pro',
+      'sub2api/grok-imagine-image',
+      'sub2api/grok-imagine-image-2.0',
+      'sub2api/grok-imagine-image-edit',
+      'sub2api/grok-imagine-image-lite',
+    ]);
+  } finally { globalThis.fetch = previous; }
+});
+
 test('allows arbitrary header-safe API keys and prefixed model IDs in saveConfig', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'pose-studio-cfg-'));
   const store = { dir, file: join(dir, 'openai.json') };
